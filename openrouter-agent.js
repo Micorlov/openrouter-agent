@@ -210,7 +210,26 @@ const HTML = String.raw`<!doctype html>
 :root[data-theme=light]{--bg:#F3F5FB;--sf:#fff;--sf2:#EEF1FA;--bd:#DEE2F0;--bd2:#C5CCDF;--tx:#0B0D18;--tx2:#4E5670;--tx3:#8C94B0;--ac:#2952D9;--ac2:#1E42B8;--ac-bg:rgba(41,82,217,.06);--u-bg:#EAF0FF;--u-bd:#B8C8F0;--code:#EEF1FA}
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--tx)}
-body{display:flex;flex-direction:column;height:100dvh;overflow:hidden}
+body{display:flex;flex-direction:row;height:100dvh;overflow:hidden}
+.app-main{flex:1;display:flex;flex-direction:column;min-width:0;height:100dvh}
+/* Sidebar */
+.sidebar{width:250px;flex-shrink:0;background:var(--sf);border-right:1px solid var(--bd);display:flex;flex-direction:column;transition:width .18s ease,margin .18s ease;overflow:hidden}
+.sidebar.collapsed{width:0;border-right:none}
+.sb-top{display:flex;align-items:center;gap:8px;padding:11px 12px;flex-shrink:0}
+.sb-new{flex:1;display:flex;align-items:center;gap:8px;background:var(--ac-bg);border:1px solid rgba(75,120,245,.3);color:var(--ac);border-radius:var(--r);padding:8px 12px;font-family:inherit;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;transition:background .14s}
+.sb-new:hover{background:var(--ac);color:#fff}
+.sb-title{font-size:10.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--tx3);padding:8px 16px 4px}
+.sb-list{flex:1;overflow-y:auto;padding:0 8px 12px}
+.sb-list::-webkit-scrollbar{width:4px}.sb-list::-webkit-scrollbar-thumb{background:var(--bd2);border-radius:4px}
+.sb-item{display:flex;align-items:center;gap:6px;padding:8px 10px;border-radius:6px;cursor:pointer;color:var(--tx2);font-size:13px;white-space:nowrap;overflow:hidden;position:relative;transition:background .12s}
+.sb-item:hover{background:var(--sf2);color:var(--tx)}
+.sb-item.active{background:var(--sf2);color:var(--tx)}
+.sb-item .sb-name{flex:1;overflow:hidden;text-overflow:ellipsis}
+.sb-item .sb-del{opacity:0;background:none;border:none;color:var(--tx3);cursor:pointer;padding:2px 4px;border-radius:4px;font-size:13px;flex-shrink:0;line-height:1}
+.sb-item:hover .sb-del{opacity:1}
+.sb-item .sb-del:hover{color:#E05555;background:var(--bd)}
+.sb-empty{color:var(--tx3);font-size:12.5px;padding:14px 16px;line-height:1.5}
+.sb-toggle{width:30px;height:30px;flex-shrink:0}
 .hdr{display:flex;align-items:center;gap:10px;padding:0 14px;height:52px;background:var(--sf);border-bottom:1px solid var(--bd);flex-shrink:0}
 .logo{font-size:13.5px;font-weight:700;letter-spacing:-.4px;flex-shrink:0}.logo em{color:var(--ac);font-style:normal}
 .mdl-wrap{flex:1;display:flex;justify-content:center;min-width:0;gap:8px;align-items:center}
@@ -349,7 +368,17 @@ textarea.tinp::placeholder{color:var(--tx3)}
   </div>
 </div>
 
+<aside class="sidebar" id="sidebar">
+  <div class="sb-top">
+    <button class="sb-new" id="sbNew"><svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>New chat</button>
+  </div>
+  <div class="sb-title">History</div>
+  <div class="sb-list" id="sbList"></div>
+</aside>
+
+<div class="app-main">
 <header class="hdr">
+  <button class="ibtn sb-toggle" id="sbToggle" title="Toggle sidebar"><svg width="15" height="15" viewBox="0 0 15 15" fill="none"><rect x="1.5" y="2.5" width="12" height="10" rx="2" stroke="currentColor" stroke-width="1.3"/><path d="M5.5 2.5v10" stroke="currentColor" stroke-width="1.3"/></svg></button>
   <div class="logo">Open<em>·</em>Agent</div>
   <div class="mdl-wrap">
     <select class="mdl-sel" id="modelSel">
@@ -427,6 +456,7 @@ textarea.tinp::placeholder{color:var(--tx3)}
   </div>
   <p class="inp-hint"><span id="rulesChip" class="rules-chip"></span> · Type <b>/</b> for skills · Enter to send · Shift+Enter = newline</p>
 </footer>
+</div>
 
 <!-- Rules & Skills manager -->
 <div class="overlay off" id="cfgOverlay">
@@ -452,6 +482,7 @@ const BASE = '';
 let apiKey = localStorage.getItem('or_key') || '';
 let messages = [], busy = false, ctrl = null;
 let mode = localStorage.getItem('or_mode') || 'chat';
+let convos = [], activeId = null;
 let rules = [], skills = [];
 const notes = new Map();
 
@@ -477,6 +508,69 @@ function applyMode(){
 modeChat.addEventListener('click', ()=>{ if(busy)return; mode='chat'; applyMode(); });
 modeAgent.addEventListener('click', ()=>{ if(busy)return; mode='agent'; applyMode(); });
 applyMode();
+
+// ── Conversation history ──────────────────────────────────────────
+const sidebar=$('sidebar'), sbList=$('sbList');
+let nextId=Date.now();
+function newConvoId(){ return 'c'+(nextId++); }
+function loadConvos(){ try{ convos=JSON.parse(localStorage.getItem('or_convos'))||[]; }catch{ convos=[]; } activeId=localStorage.getItem('or_active')||null; }
+function saveConvos(){ localStorage.setItem('or_convos',JSON.stringify(convos)); localStorage.setItem('or_active',activeId||''); }
+function activeConvo(){ return convos.find(c=>c.id===activeId); }
+function titleOf(msgs){ const u=msgs.find(m=>m.role==='user'); return u ? (u.content||'').slice(0,48) : 'New chat'; }
+function persistCurrent(){
+  if(!messages.length) return;
+  let c=activeConvo();
+  if(!c){ c={id:activeId||newConvoId(),messages:[],ts:0}; activeId=c.id; convos.push(c); }
+  c.messages=messages; c.title=titleOf(messages); c.ts=nextId++;
+  saveConvos(); renderSidebar();
+}
+function renderSidebar(){
+  const sorted=[...convos].sort((a,b)=>(b.ts||0)-(a.ts||0));
+  if(!sorted.length){ sbList.innerHTML='<div class="sb-empty">No conversations yet. Your chats will appear here.</div>'; return; }
+  sbList.innerHTML='';
+  sorted.forEach(c=>{
+    const el=document.createElement('div'); el.className='sb-item'+(c.id===activeId?' active':'');
+    el.innerHTML='<span class="sb-name">'+esc(c.title||'Untitled')+'</span><button class="sb-del" title="Delete">✕</button>';
+    el.querySelector('.sb-name').addEventListener('click',()=>switchConvo(c.id));
+    el.querySelector('.sb-del').addEventListener('click',e=>{ e.stopPropagation(); deleteConvo(c.id); });
+    sbList.appendChild(el);
+  });
+}
+function renderMessages(){
+  msgs.innerHTML=''; msgs.appendChild(emptyState);
+  if(!messages.length){ emptyState.style.display=''; return; }
+  emptyState.style.display='none';
+  const label=modelSel.options[modelSel.selectedIndex]?.text.replace(/ \((free|local)\)$/,'')||'Assistant';
+  for(const m of messages){
+    if(m.role==='user') appendMsg('user',m.content,'You');
+    else if(m.role==='assistant' && m.content){ const r=appendMsg('asst',m.content,label); addCopy(r,m.content); }
+    // assistant tool-call stubs and tool results are omitted from the replay for readability
+  }
+  scroll();
+}
+function newChat(){
+  if(busy) return;
+  persistCurrent();
+  messages=[]; notes.clear(); activeId=newConvoId(); hideErr();
+  renderMessages(); renderSidebar(); saveConvos(); tinp.focus();
+}
+function switchConvo(id){
+  if(busy || id===activeId) return;
+  persistCurrent();
+  const c=convos.find(x=>x.id===id); if(!c) return;
+  activeId=id; messages=c.messages||[]; notes.clear(); hideErr();
+  renderMessages(); renderSidebar(); saveConvos();
+}
+function deleteConvo(id){
+  convos=convos.filter(c=>c.id!==id);
+  if(id===activeId){ activeId=null; messages=[]; renderMessages(); }
+  saveConvos(); renderSidebar();
+}
+$('sbNew').addEventListener('click', newChat);
+$('sbToggle').addEventListener('click', ()=>sidebar.classList.toggle('collapsed'));
+loadConvos();
+if(activeId && activeConvo()){ messages=activeConvo().messages||[]; renderMessages(); }
+renderSidebar();
 
 // Theme
 const sv = localStorage.getItem('or_theme');
@@ -645,6 +739,7 @@ async function send(){
   if(mode==='agent') await runAgent(content, skillBody);
   else await runChat(content, skillBody);
   setSend();
+  persistCurrent();
 }
 
 // ── Chat mode (streaming) ─────────────────────────────────────────
@@ -907,7 +1002,7 @@ function addCopy(row,text){
 function scroll(){ chat.scrollTop=chat.scrollHeight; }
 function showErr(m){ errBar.textContent='Error: '+m; errBar.classList.add('on'); }
 function hideErr(){ errBar.classList.remove('on'); }
-clearBtn.addEventListener('click',()=>{ if(busy)return; messages=[]; notes.clear(); msgs.innerHTML=''; msgs.appendChild(emptyState); emptyState.style.display=''; hideErr(); refreshCwd(); });
+clearBtn.addEventListener('click',()=>{ if(busy)return; if(activeId){ convos=convos.filter(c=>c.id!==activeId); } messages=[]; notes.clear(); activeId=null; hideErr(); renderMessages(); renderSidebar(); saveConvos(); refreshCwd(); });
 
 // ── Markdown ──────────────────────────────────────────────────────
 function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
