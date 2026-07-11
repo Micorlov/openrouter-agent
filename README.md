@@ -1,8 +1,21 @@
 # Open·Agent
 
-A single-file, local AI chat app that talks to **OpenRouter** (100+ cloud models) *and* your **local Ollama models** — with a built-in **Agent mode** that has real terminal and file access, plus a **Rules & Skills** system inspired by Claude Code.
+A single-file AI chat app for **OpenRouter** (100+ cloud models) and your **local Ollama models** — with an **Agent mode** (terminal + file access when run locally) and a **Rules & Skills** system inspired by Claude Code.
 
-No build step, no dependencies. Just Node.js.
+**🌐 Live web version (chat only, no install): https://micorlov.github.io/openrouter-agent/**
+
+There are two ways to run it:
+
+| | Live web version (GitHub Pages) | Local server (`openrouter-agent.js`) |
+|---|---|---|
+| Install | none — just open the link | `node openrouter-agent.js` |
+| Cloud models (OpenRouter) | ✅ | ✅ |
+| Agent — in-browser tools (calc, notes) | ✅ | ✅ |
+| Agent — terminal & file access | ❌ (no server) | ✅ |
+| Local Ollama models | ❌ | ✅ |
+| Rules & Skills | ✅ (in browser) | ✅ (as files) |
+
+For terminal access and local models, run the local server:
 
 ```bash
 node openrouter-agent.js
