@@ -244,6 +244,19 @@ body{display:flex;flex-direction:row;height:100dvh;overflow:hidden}
 .mode-opt{border:none;background:none;color:var(--tx3);font-family:inherit;font-size:12px;font-weight:600;padding:4px 11px;border-radius:5px;cursor:pointer;transition:color .14s,background .14s}
 .mode-opt:hover{color:var(--tx2)}
 .mode-opt.on{background:var(--ac);color:#fff}
+.perm-sel{display:none;background:var(--sf2);border:1px solid var(--bd);color:var(--tx);font-family:inherit;font-size:12px;font-weight:600;padding:5px 22px 5px 9px;border-radius:var(--r);cursor:pointer;outline:none;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='9' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%237A82A0' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 7px center}
+.perm-sel.show{display:block}
+.perm-sel:focus{border-color:var(--ac)}
+/* Agent confirmation card */
+.confirm-row{padding:8px 0}
+.confirm-card{background:var(--sf2);border:1px solid #C98A2E;border-radius:var(--r);overflow:hidden}
+.confirm-hd{display:flex;align-items:center;gap:8px;padding:9px 12px;background:rgba(201,138,46,.12);border-bottom:1px solid var(--bd);font-size:12.5px;font-weight:700;color:#E0A94A}
+.confirm-body{padding:10px 12px;font-family:ui-monospace,'SF Mono',monospace;font-size:12.5px;color:var(--tx);white-space:pre-wrap;word-break:break-all;max-height:220px;overflow-y:auto}
+.confirm-acts{display:flex;gap:8px;padding:10px 12px;border-top:1px solid var(--bd)}
+.confirm-acts button{padding:6px 16px;border-radius:6px;font-size:12.5px;font-weight:600;font-family:inherit;cursor:pointer;border:1px solid var(--bd)}
+.cf-approve{background:var(--ac);color:#fff;border-color:var(--ac)!important}.cf-approve:hover{background:var(--ac2)}
+.cf-skip{background:var(--sf);color:var(--tx2)}.cf-skip:hover{color:var(--tx)}
+.cf-decided{opacity:.55;pointer-events:none}
 .mode-opt:focus-visible{outline:2px solid var(--ac);outline-offset:1px}
 .chat{flex:1;overflow-y:auto}
 .chat::-webkit-scrollbar{width:4px}.chat::-webkit-scrollbar-thumb{background:var(--bd2);border-radius:4px}.chat::-webkit-scrollbar-track{background:transparent}
@@ -420,6 +433,11 @@ textarea.tinp::placeholder{color:var(--tx3)}
       <button class="mode-opt on" id="modeChat" role="tab" aria-selected="true">Chat</button>
       <button class="mode-opt" id="modeAgent" role="tab" aria-selected="false">Agent</button>
     </div>
+    <select class="perm-sel" id="permSel" title="Agent autonomy">
+      <option value="auto">⚡ Auto</option>
+      <option value="confirm">✋ Confirm</option>
+      <option value="plan">📋 Plan</option>
+    </select>
     <button class="ibtn" id="cfgBtn" title="Rules &amp; Skills">
       <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M3 2.5h9M3 5.5h9M3 8.5h6M3 11.5h6" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/><circle cx="11.5" cy="10.5" r="2.2" stroke="currentColor" stroke-width="1.2"/></svg>
     </button>
@@ -483,6 +501,7 @@ let apiKey = localStorage.getItem('or_key') || '';
 let messages = [], busy = false, ctrl = null;
 let mode = localStorage.getItem('or_mode') || 'chat';
 let convos = [], activeId = null;
+let agentPerm = localStorage.getItem('or_perm') || 'auto'; // auto | confirm | plan
 let rules = [], skills = [];
 const notes = new Map();
 
@@ -492,7 +511,17 @@ const themeBtn = $('themeBtn'), keyOverlay = $('keyOverlay'), ki = $('ki');
 const cancelKey = $('cancelKey'), saveKeyBtn = $('saveKey');
 const chat = $('chat'), msgs = $('msgs'), emptyState = $('emptyState');
 const errBar = $('errBar'), tinp = $('tinp'), sbtn = $('sbtn'), cwdChip = $('cwdChip');
-const modeChat = $('modeChat'), modeAgent = $('modeAgent');
+const modeChat = $('modeChat'), modeAgent = $('modeAgent'), permSel = $('permSel');
+
+// Agent autonomy selector
+permSel.value = agentPerm;
+permSel.addEventListener('change', ()=>{ agentPerm = permSel.value; localStorage.setItem('or_perm', agentPerm); updatePermHint(); });
+function updatePermHint(){
+  tinp.placeholder = mode!=='agent' ? 'Message…'
+    : agentPerm==='plan' ? 'Ask for a plan (won’t execute)…'
+    : agentPerm==='confirm' ? 'Ask the agent (approves each action)…'
+    : 'Ask the agent to build it…';
+}
 
 // Mode toggle
 function applyMode(){
@@ -502,7 +531,8 @@ function applyMode(){
   modeChat.setAttribute('aria-selected', !agent);
   modeAgent.setAttribute('aria-selected', agent);
   cwdChip.style.display = agent ? '' : 'none';
-  tinp.placeholder = agent ? 'Ask the agent…' : 'Message…';
+  permSel.classList.toggle('show', agent);
+  updatePermHint();
   localStorage.setItem('or_mode', mode);
 }
 modeChat.addEventListener('click', ()=>{ if(busy)return; mode='chat'; applyMode(); });
@@ -613,7 +643,7 @@ function rulesText(){ return rules.map(r=>r.content.trim()).filter(Boolean).join
 function buildSystem(isAgent, skillBody){
   const parts=[];
   const rt=rulesText(); if(rt) parts.push(rt);
-  if(isAgent) parts.push(SYS);
+  if(isAgent) parts.push(agentSystem());
   if(skillBody) parts.push('## Active skill\n'+skillBody);
   return parts.join('\n\n');
 }
@@ -893,7 +923,14 @@ function safeCalc(e){
 }
 
 // ── Agent loop ────────────────────────────────────────────────────
-const SYS = 'You are a local system agent running on the user\'s Mac. You have full shell access via run_command. Use tools decisively — run commands, read files, list directories. Never ask permission before using tools. Show the user what you find. Be direct and efficient.';
+const SYS_BASE = "You are an autonomous coding agent running on the user's Mac with full shell access (run_command, read_file, write_file, list_directory). "
+  + "When the user asks you to build, create, fix, or set up something, DO IT YOURSELF end-to-end: create the real files with write_file, run real commands with run_command (mkdir, npm init, npm install, git init, etc.), and verify your work by running it. "
+  + "CRITICAL: Do NOT reply with a plan, a tutorial, or numbered 'steps to do' — the user cannot run steps, YOU run them. Never say 'you can do X' — just do X with a tool call. "
+  + "Work inside the current directory unless told otherwise; make a project subfolder for new projects. Chain many tool calls as needed. "
+  + "When finished, give a short summary of exactly what files you created and the one command to run it.";
+const SYS_PLAN = "You are a planning assistant. Produce a clear, concise step-by-step PLAN for what you WOULD do. "
+  + "Do NOT use any tools and do NOT execute anything — planning only. End by telling the user to switch the agent to 'Auto' mode to have you build it.";
+function agentSystem(){ return agentPerm==='plan' ? SYS_PLAN : SYS_BASE; }
 
 async function runAgent(content, skillBody){
   const sys = buildSystem(true, skillBody);
@@ -914,7 +951,7 @@ async function runAgent(content, skillBody){
         headers: local
           ? {'Content-Type':'application/json'}
           : {'Authorization':'Bearer '+apiKey,'Content-Type':'application/json','HTTP-Referer':location.href,'X-Title':'OpenRouter Agent'},
-        body:JSON.stringify({model: local ? model.slice(7) : model, messages:[{role:'system',content:sys},...messages],tools:TOOLS,tool_choice:'auto',stream:false})
+        body:JSON.stringify({model: local ? model.slice(7) : model, messages:[{role:'system',content:sys},...messages], ...(agentPerm==='plan'?{}:{tools:TOOLS,tool_choice:'auto'}), stream:false})
       });
       thinking.remove();
       if(!res.ok){
@@ -937,6 +974,15 @@ async function runAgent(content, skillBody){
         messages.push(msg);
         for(const tc of msg.tool_calls){
           let args={}; try{args=JSON.parse(tc.function?.arguments||'{}');}catch{}
+          const mutating = tc.function.name==='run_command' || tc.function.name==='write_file';
+          if(agentPerm==='confirm' && mutating){
+            const ok = await confirmTool(tc.function.name, args);
+            if(!ok){
+              appendToolBlock(tc.function.name, args, 'Skipped by user.');
+              messages.push({role:'tool',tool_call_id:tc.id,content:'The user skipped this action. Continue without it or ask what to do.'});
+              continue;
+            }
+          }
           const thinking2 = appendThinking('Running: '+esc(tc.function.name)+'…');
           const result = await executeTool(tc.function.name, args).catch(e=>'Error: '+e.message);
           thinking2.remove();
@@ -955,6 +1001,25 @@ async function runAgent(content, skillBody){
     }
   }
   scroll();
+}
+
+// Confirm mode: pause for user approval before a mutating tool runs
+function confirmTool(name, args){
+  return new Promise(resolve=>{
+    emptyState.style.display='none';
+    const detail = name==='run_command' ? String(args.command||'')
+      : name==='write_file' ? ('write '+args.path+'  ('+String(args.content||'').length+' chars)')
+      : JSON.stringify(args,null,2);
+    const row=document.createElement('div'); row.className='confirm-row';
+    row.innerHTML='<div class="confirm-card"><div class="confirm-hd">✋ Approve <b>'+esc(name)+'</b>?</div>'
+      +'<div class="confirm-body">'+esc(detail)+'</div>'
+      +'<div class="confirm-acts"><button class="cf-approve">Approve ⏎</button><button class="cf-skip">Skip</button></div></div>';
+    msgs.appendChild(row); scroll();
+    const acts=row.querySelector('.confirm-acts');
+    const done=v=>{ acts.classList.add('cf-decided'); resolve(v); };
+    row.querySelector('.cf-approve').addEventListener('click',()=>done(true));
+    row.querySelector('.cf-skip').addEventListener('click',()=>done(false));
+  });
 }
 
 // ── DOM helpers ───────────────────────────────────────────────────
