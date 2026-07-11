@@ -120,6 +120,11 @@ async function handle(req, res) {
     if (p === '/run') {
       const cmd = String(d.command || '').trim();
       if (!cmd) return json(res, { error: 'empty command' });
+      // Auto mode: drive the real macOS Terminal.app so the user watches it live
+      if (d.drive) {
+        driveInTerminal(cmd).then(r => json(res, r)).catch(e => json(res, { error: e.message, cwd }));
+        return;
+      }
       const cdMatch = cmd.match(/^cd\s+(.*)/);
       if (cdMatch) {
         const t = cdMatch[1].trim().replace(/^~(?=$|\/)/, process.env.HOME || '');
@@ -173,6 +178,74 @@ async function handle(req, res) {
     }
   }
   res.writeHead(404); res.end('not found');
+}
+
+// Drive the real macOS Terminal.app: run the command in a shared "OpenAgent"
+// window so the user watches it live, while we capture output + cwd for the agent.
+let driveSeq = 0;
+function driveInTerminal(command) {
+  return new Promise((resolve, reject) => {
+    const id = ++driveSeq;
+    const out = `/tmp/oa-${id}.out`, cwdf = `/tmp/oa-${id}.cwd`, sh = `/tmp/oa-${id}.sh`;
+    try { fs.unlinkSync(out); } catch {}
+    // Shell script: cd to the tracked dir, echo the command, run it (live via tee), record exit + new cwd
+    // Everything runs inside the tee'd subshell so cd/pwd and the exit code are captured correctly
+    const script =
+`#!/bin/bash
+cd ${JSON.stringify(cwd)} 2>/dev/null
+printf '\\033[36m$ %s\\033[0m\\n' ${JSON.stringify(command)}
+{
+${command}
+__ec=$?
+pwd > ${cwdf}
+printf '\\n__OA_EXIT__ %s\\n' "$__ec"
+} 2>&1 | tee ${out}
+`;
+    fs.writeFileSync(sh, script, { mode: 0o755 });
+    // AppleScript: find-or-create the OpenAgent tab, run the script there, bring Terminal forward
+    const scpt = `tell application "Terminal"
+  set theTab to missing value
+  repeat with w in windows
+    repeat with t in tabs of w
+      try
+        if custom title of t is "OpenAgent" then set theTab to t
+      end try
+    end repeat
+  end repeat
+  if theTab is missing value then
+    do script "bash ${sh}"
+    delay 0.2
+    set custom title of selected tab of front window to "OpenAgent"
+  else
+    do script "bash ${sh}" in theTab
+  end if
+  activate
+end tell`;
+    const scptFile = `/tmp/oa-${id}.scpt`;
+    fs.writeFileSync(scptFile, scpt);
+    exec(`osascript ${scptFile}`, { timeout: 15000 }, (err) => {
+      if (err) { reject(new Error('Could not control Terminal.app: ' + err.message)); return; }
+      // Poll the output file for the done marker (up to 5 min for long installs)
+      const started = Date.now();
+      const poll = () => {
+        let data = '';
+        try { data = fs.readFileSync(out, 'utf8'); } catch {}
+        const m = data.match(/__OA_EXIT__ (\d+)/);
+        if (m) {
+          const body = data.slice(0, m.index).trim();
+          let newCwd = cwd;
+          try { newCwd = fs.readFileSync(cwdf, 'utf8').trim() || cwd; } catch {}
+          cwd = newCwd;
+          try { fs.unlinkSync(sh); fs.unlinkSync(scptFile); } catch {}
+          resolve({ stdout: body || '(no output)', exitCode: Number(m[1]), cwd, terminal: true });
+          return;
+        }
+        if (Date.now() - started > 300000) { resolve({ stdout: (data || '') + '\n[still running in Terminal…]', cwd, terminal: true }); return; }
+        setTimeout(poll, 300);
+      };
+      setTimeout(poll, 400);
+    });
+  });
 }
 
 function json(res, d) { res.writeHead(200,{'Content-Type':'application/json'}); res.end(JSON.stringify(d)); }
@@ -246,6 +319,9 @@ body{display:flex;flex-direction:row;height:100dvh;overflow:hidden}
 .mode-opt.on{background:var(--ac);color:#fff}
 .perm-sel{display:none;background:var(--sf2);border:1px solid var(--bd);color:var(--tx);font-family:inherit;font-size:12px;font-weight:600;padding:5px 22px 5px 9px;border-radius:var(--r);cursor:pointer;outline:none;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='9' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%237A82A0' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 7px center}
 .perm-sel.show{display:block}
+.drive-btn{display:none}
+.drive-btn.show{display:flex}
+.drive-btn.on{color:var(--ac);border-color:var(--ac);background:var(--ac-bg)}
 .perm-sel:focus{border-color:var(--ac)}
 /* Agent confirmation card */
 .confirm-row{padding:8px 0}
@@ -438,6 +514,7 @@ textarea.tinp::placeholder{color:var(--tx3)}
       <option value="confirm">✋ Confirm</option>
       <option value="plan">📋 Plan</option>
     </select>
+    <button class="ibtn drive-btn" id="driveBtn" title="Run in the real macOS Terminal (Auto mode)"><svg width="15" height="15" viewBox="0 0 15 15" fill="none"><rect x="1.5" y="2.5" width="12" height="10" rx="1.6" stroke="currentColor" stroke-width="1.3"/><path d="M4 6l2 1.5L4 9M7.5 9.5h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
     <button class="ibtn" id="cfgBtn" title="Rules &amp; Skills">
       <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M3 2.5h9M3 5.5h9M3 8.5h6M3 11.5h6" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/><circle cx="11.5" cy="10.5" r="2.2" stroke="currentColor" stroke-width="1.2"/></svg>
     </button>
@@ -502,6 +579,7 @@ let messages = [], busy = false, ctrl = null;
 let mode = localStorage.getItem('or_mode') || 'chat';
 let convos = [], activeId = null;
 let agentPerm = localStorage.getItem('or_perm') || 'auto'; // auto | confirm | plan
+let driveTerminal = localStorage.getItem('or_drive') !== '0'; // Auto: run in real Terminal.app
 let rules = [], skills = [];
 const notes = new Map();
 
@@ -513,13 +591,22 @@ const chat = $('chat'), msgs = $('msgs'), emptyState = $('emptyState');
 const errBar = $('errBar'), tinp = $('tinp'), sbtn = $('sbtn'), cwdChip = $('cwdChip');
 const modeChat = $('modeChat'), modeAgent = $('modeAgent'), permSel = $('permSel');
 
-// Agent autonomy selector
+// Agent autonomy selector + real-Terminal toggle
+const driveBtn = $('driveBtn');
 permSel.value = agentPerm;
-permSel.addEventListener('change', ()=>{ agentPerm = permSel.value; localStorage.setItem('or_perm', agentPerm); updatePermHint(); });
+permSel.addEventListener('change', ()=>{ agentPerm = permSel.value; localStorage.setItem('or_perm', agentPerm); updatePermHint(); updateDriveBtn(); });
+driveBtn.addEventListener('click', ()=>{ driveTerminal=!driveTerminal; localStorage.setItem('or_drive', driveTerminal?'1':'0'); updateDriveBtn(); });
+function updateDriveBtn(){
+  const show = mode==='agent' && agentPerm==='auto';
+  driveBtn.classList.toggle('show', show);
+  driveBtn.classList.toggle('on', driveTerminal);
+  driveBtn.title = driveTerminal ? 'Running in the real macOS Terminal — click for silent mode' : 'Silent mode — click to run in the real macOS Terminal';
+}
 function updatePermHint(){
   tinp.placeholder = mode!=='agent' ? 'Message…'
     : agentPerm==='plan' ? 'Ask for a plan (won’t execute)…'
     : agentPerm==='confirm' ? 'Ask the agent (approves each action)…'
+    : driveTerminal ? 'Auto — the agent drives your real Terminal…'
     : 'Ask the agent to build it…';
 }
 
@@ -533,6 +620,7 @@ function applyMode(){
   cwdChip.style.display = agent ? '' : 'none';
   permSel.classList.toggle('show', agent);
   updatePermHint();
+  updateDriveBtn();
   localStorage.setItem('or_mode', mode);
 }
 modeChat.addEventListener('click', ()=>{ if(busy)return; mode='chat'; applyMode(); });
@@ -881,7 +969,9 @@ const TOOLS = [
 
 async function executeTool(name, args){
   if(name==='run_command'){
-    const r = await fetch(BASE+'/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:args.command})});
+    // Auto mode drives the real macOS Terminal so the user watches it take control
+    const drive = (mode==='agent' && agentPerm==='auto' && driveTerminal);
+    const r = await fetch(BASE+'/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:args.command, drive})});
     const d = await r.json();
     if(d.error) return 'Error: '+d.error;
     let out = '';
