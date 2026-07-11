@@ -17,7 +17,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 # 1. Bundle the server
 cp "$ROOT/openrouter-agent.js" "$APP/Contents/Resources/openrouter-agent.js"
 
-# 2. Info.plist
+# 2. Info.plist (ATS exception lets the WKWebView load http://localhost)
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -33,48 +33,27 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleIconFile</key><string>icon</string>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSAppTransportSecurity</key>
+  <dict><key>NSAllowsLocalNetworking</key><true/></dict>
 </dict>
 </plist>
 PLIST
 
-# 3. Launcher executable — finds node, starts the server, opens the browser
-cat > "$APP/Contents/MacOS/OpenAgent" <<'LAUNCH'
-#!/bin/bash
-# Locate the app's Resources dir
-HERE="$(cd "$(dirname "$0")/../Resources" && pwd)"
-SERVER="$HERE/openrouter-agent.js"
-PORT=3001
-URL="http://localhost:$PORT/"
-
-# GUI-launched apps have a minimal PATH — search common node locations
-NODE=""
-for c in "$(command -v node 2>/dev/null)" \
-         /opt/homebrew/bin/node /usr/local/bin/node \
-         "$HOME/.nvm/versions/node"/*/bin/node \
-         "$HOME/.volta/bin/node" /usr/bin/node; do
-  if [ -n "$c" ] && [ -x "$c" ]; then NODE="$c"; break; fi
-done
-
-if [ -z "$NODE" ]; then
-  osascript -e 'display dialog "Node.js is required to run Open·Agent.\n\nInstall it from nodejs.org (or: brew install node), then reopen this app." buttons {"Get Node.js", "Cancel"} default button "Get Node.js" with title "Open·Agent"' \
-    -e 'if button returned of result is "Get Node.js" then open location "https://nodejs.org/en/download"' >/dev/null 2>&1 || true
-  exit 1
+# 3. Compile the native WKWebView window app (universal: arm64 + x86_64)
+echo "  compiling native window (Swift)…"
+swiftc -O -whole-module-optimization \
+  -target arm64-apple-macos11 \
+  "$ROOT/mac/OpenAgent.swift" -o "$APP/Contents/MacOS/OpenAgent.arm64" 2>/dev/null || \
+  swiftc -O "$ROOT/mac/OpenAgent.swift" -o "$APP/Contents/MacOS/OpenAgent.arm64"
+# try to also build x86_64 for Intel Macs; skip if SDK slice unavailable
+if swiftc -O -target x86_64-apple-macos11 "$ROOT/mac/OpenAgent.swift" -o "$APP/Contents/MacOS/OpenAgent.x86_64" 2>/dev/null; then
+  lipo -create "$APP/Contents/MacOS/OpenAgent.arm64" "$APP/Contents/MacOS/OpenAgent.x86_64" -output "$APP/Contents/MacOS/OpenAgent"
+  rm -f "$APP/Contents/MacOS/OpenAgent.arm64" "$APP/Contents/MacOS/OpenAgent.x86_64"
+  echo "  ✓ universal binary (arm64 + x86_64)"
+else
+  mv "$APP/Contents/MacOS/OpenAgent.arm64" "$APP/Contents/MacOS/OpenAgent"
+  echo "  ✓ arm64 binary"
 fi
-
-# If a server is already running on the port, just open the browser
-if curl -s -o /dev/null "http://localhost:$PORT/" 2>/dev/null; then
-  open "$URL"; exit 0
-fi
-
-# Open the browser once the server answers
-( for i in $(seq 1 40); do
-    curl -s -o /dev/null "http://localhost:$PORT/" 2>/dev/null && { open "$URL"; break; }
-    sleep 0.5
-  done ) &
-
-# Run the server in the foreground so quitting the app stops it
-exec "$NODE" "$SERVER"
-LAUNCH
 chmod +x "$APP/Contents/MacOS/OpenAgent"
 
 # 4. Icon (optional — only if a prebuilt icon.icns exists)
