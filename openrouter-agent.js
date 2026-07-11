@@ -810,7 +810,8 @@ async function runAgent(content, skillBody){
   let model = modelSel.value, triedFallback = false;
 
   while(iter++ < MAX){
-    const thinking = appendThinking(iter===1?'Thinking…':'Working…');
+    const slow=/(^|\/|-)(o1|o3|o4|r1|qwq|reasoning|thinking)(-|:|$)/i.test(model);
+    const thinking = appendThinking(iter===1?(slow?'Thinking (reasoning model — be patient)…':'Thinking…'):'Working…');
     try{
       const local = isLocal(model);
       const res = await fetch(local ? BASE+'/local/chat' : 'https://openrouter.ai/api/v1/chat/completions',{
@@ -874,7 +875,13 @@ function appendMsg(role,content,label){
 function appendThinking(text){
   const r=document.createElement('div'); r.className='think-row';
   r.innerHTML='<div class="dots"><span></span><span></span><span></span></div><span class="think-txt">'+esc(text)+'</span>';
-  msgs.appendChild(r); scroll(); return r;
+  msgs.appendChild(r); scroll();
+  // live elapsed-seconds counter so slow (reasoning) models never look frozen
+  const txt=r.querySelector('.think-txt'); let s=0;
+  const timer=setInterval(()=>{ s++; txt.textContent=text+' ('+s+'s'+(s>=20?' — reasoning models can take a minute':'')+')'; },1000);
+  const origRemove=r.remove.bind(r);
+  r.remove=()=>{ clearInterval(timer); origRemove(); };
+  return r;
 }
 function appendToolBlock(name,args,result){
   emptyState.style.display='none';
