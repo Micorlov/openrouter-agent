@@ -1,0 +1,25 @@
+{
+  "name": "openrouter-agent",
+  "version": "1.0.0",
+  "description": "Single-file local AI chat with OpenRouter + Ollama, agent mode with terminal access, and a rules & skills system",
+  "main": "openrouter-agent.js",
+  "bin": {
+    "openrouter-agent": "openrouter-agent.js"
+  },
+  "scripts": {
+    "start": "node openrouter-agent.js"
+  },
+  "keywords": [
+    "openrouter",
+    "ollama",
+    "ai",
+    "chat",
+    "agent",
+    "llm",
+    "local"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}
