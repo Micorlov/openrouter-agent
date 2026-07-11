@@ -160,7 +160,7 @@ textarea.tinp{flex:1;background:none;border:none;outline:none;color:var(--tx);fo
     <div class="empty" id="emptyState">
       <svg width="44" height="44" viewBox="0 0 44 44" fill="none"><rect x="3" y="7" width="38" height="30" rx="5" stroke="currentColor" stroke-width="1.8"/><path d="M11 18h22M11 26h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
       <h2>Open·Chat</h2>
-      <p id="emptyDesc">Set your OpenRouter key and start chatting. Agent mode adds in-browser tools (calculator, notes, date/time).</p>
+      <p id="emptyDesc">Set your OpenRouter key and start chatting. <b>Agent mode</b> can search the web, run Python, read Wikipedia, and more — all in your browser.</p>
     </div>
   </div>
 </main>
@@ -208,7 +208,7 @@ $('cancelKey').addEventListener('click',closeKeyModal);
 $('keyOverlay').addEventListener('click',e=>{if(e.target===$('keyOverlay'))closeKeyModal();});
 $('saveKey').addEventListener('click',()=>{const v=$('ki').value.trim();if(v){apiKey=v;localStorage.setItem('or_key',v);}closeKeyModal();hideErr();refreshHint();});
 $('ki').addEventListener('keydown',e=>{if(e.key==='Enter')$('saveKey').click();if(e.key==='Escape')closeKeyModal();});
-function refreshHint(){const d=$('emptyDesc');if(!d)return;if(apiKey){d.textContent='Pick a model and start. Agent mode adds in-browser tools (calculator, notes, date/time).';}else{d.innerHTML='Set your <button class="key-link" id="qk">OpenRouter API key</button> to start.';$('qk')?.addEventListener('click',openKeyModal);}}
+function refreshHint(){const d=$('emptyDesc');if(!d)return;if(apiKey){d.innerHTML='Pick a model and start. <b>Agent mode</b> can search the web, run Python, and read Wikipedia — all in your browser.';}else{d.innerHTML='Set your <button class="key-link" id="qk">OpenRouter API key</button> to start.';$('qk')?.addEventListener('click',openKeyModal);}}
 
 // ── Rules & Skills (localStorage) ─────────────────────────────────
 const DEF_RULES=[{name:'default',content:'# Working rules\n- Be concise and direct. No preamble.\n- Use the calculator tool for any math instead of computing mentally.\n- When unsure, say so briefly rather than guessing.'}];
@@ -282,22 +282,75 @@ async function runChat(content,skillBody){
 
 // ── Agent (in-browser tools only — no terminal on a static host) ──
 const TOOLS=[
- {type:'function',function:{name:'calculate',description:'Evaluate a math expression.',parameters:{type:'object',properties:{expression:{type:'string'}},required:['expression']}}},
+ {type:'function',function:{name:'web_search',description:'Search the web for current information, facts, news, definitions. Returns summaries and top results.',parameters:{type:'object',properties:{query:{type:'string'}},required:['query']}}},
+ {type:'function',function:{name:'read_wikipedia',description:'Read the intro of a Wikipedia article for in-depth factual information on a topic.',parameters:{type:'object',properties:{topic:{type:'string'}},required:['topic']}}},
+ {type:'function',function:{name:'run_python',description:'Execute Python 3 code in a sandbox and return stdout. Use for computation, data analysis, algorithms. Has numpy-style stdlib. print() your results.',parameters:{type:'object',properties:{code:{type:'string'}},required:['code']}}},
+ {type:'function',function:{name:'calculate',description:'Evaluate a quick math expression.',parameters:{type:'object',properties:{expression:{type:'string'}},required:['expression']}}},
  {type:'function',function:{name:'get_datetime',description:'Get current date and time.',parameters:{type:'object',properties:{}}}},
  {type:'function',function:{name:'take_note',description:'Store a note.',parameters:{type:'object',properties:{key:{type:'string'},value:{type:'string'}},required:['key','value']}}},
  {type:'function',function:{name:'get_note',description:'Retrieve a stored note.',parameters:{type:'object',properties:{key:{type:'string'}},required:['key']}}},
  {type:'function',function:{name:'list_notes',description:'List all stored note keys.',parameters:{type:'object',properties:{}}}},
- {type:'function',function:{name:'count_text',description:'Count words/characters/lines in text.',parameters:{type:'object',properties:{text:{type:'string'},mode:{type:'string',enum:['words','characters','lines']}},required:['text','mode']}}},
 ];
-const SYS='You are a helpful assistant with in-browser tools (calculator, notes, date/time, text counting). Use the calculator for any math. Be concise. You do NOT have terminal or file access.';
-function executeTool(name,a){try{
+const SYS='You are a capable web agent that runs entirely in the user\'s browser. You have real tools: web_search (live internet search), read_wikipedia (in-depth facts), run_python (execute Python code), calculate, notes, and date/time. Use web_search for anything current or factual you are unsure about. Use run_python for computation, data work, or algorithms. Chain tools as needed, then give a clear final answer. You do NOT have terminal or local-file access (that needs the local version).';
+
+// Lazy-load Pyodide (Python interpreter) only when first needed
+let pyReady=null;
+function loadPy(){
+  if(!pyReady) pyReady=new Promise((resolve,reject)=>{
+    const s=document.createElement('script');
+    s.src='https://cdn.jsdelivr.net/pyodide/v0.26.2/full/pyodide.js';
+    s.onload=async()=>{ try{ resolve(await loadPyodide()); }catch(e){ reject(e); } };
+    s.onerror=()=>reject(new Error('Failed to load Python runtime'));
+    document.head.appendChild(s);
+  });
+  return pyReady;
+}
+async function runPython(code){
+  const py=await loadPy();
+  let out='';
+  py.setStdout({batched:t=>out+=t+'\n'});
+  py.setStderr({batched:t=>out+=t+'\n'});
+  try{
+    const ret=await py.runPythonAsync(code);
+    if(ret!==undefined && ret!==null && String(ret)!=='undefined') out+=String(ret);
+  }catch(e){ out+='\n'+String(e.message||e); }
+  return out.trim()||'(no output)';
+}
+async function webSearch(q){
+  const out=[];
+  try{
+    const r=await fetch('https://api.duckduckgo.com/?q='+encodeURIComponent(q)+'&format=json&no_html=1&skip_disambig=1');
+    const d=await r.json();
+    if(d.AbstractText) out.push(d.AbstractText+(d.AbstractURL?'\nSource: '+d.AbstractURL:''));
+    if(d.Answer) out.push(String(d.Answer));
+    (d.RelatedTopics||[]).forEach(t=>{ if(t.Text) out.push('• '+t.Text); });
+  }catch{}
+  if(out.length<2){
+    try{
+      const wr=await fetch('https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch='+encodeURIComponent(q)+'&format=json&origin=*&srlimit=5');
+      const wd=await wr.json();
+      (wd.query?.search||[]).forEach(s=>out.push('• '+s.title+': '+s.snippet.replace(/<[^>]+>/g,'')+'…'));
+    }catch{}
+  }
+  return out.slice(0,8).join('\n') || 'No results found.';
+}
+async function readWiki(topic){
+  const r=await fetch('https://en.wikipedia.org/w/api.php?action=query&prop=extracts&exintro&explaintext&redirects=1&titles='+encodeURIComponent(topic)+'&format=json&origin=*');
+  const d=await r.json();
+  const first=Object.values(d.query?.pages||{})[0];
+  return (first&&first.extract) ? first.extract.slice(0,2500) : 'No Wikipedia article found for "'+topic+'".';
+}
+async function executeTool(name,a){try{
+ if(name==='web_search')return await webSearch(String(a.query||''));
+ if(name==='read_wikipedia')return await readWiki(String(a.topic||''));
+ if(name==='run_python')return await runPython(String(a.code||''));
  if(name==='calculate')return String(safeCalc(String(a.expression||'')));
  if(name==='get_datetime')return new Date().toLocaleString('en-US',{weekday:'long',year:'numeric',month:'long',day:'numeric',hour:'2-digit',minute:'2-digit',timeZoneName:'short'});
  if(name==='take_note'){notes.set(String(a.key),String(a.value));return 'Saved "'+a.key+'".';}
  if(name==='get_note')return notes.has(String(a.key))?notes.get(String(a.key)):'No note "'+a.key+'".';
  if(name==='list_notes')return notes.size?[...notes.keys()].join(', '):'No notes.';
- if(name==='count_text'){const t=String(a.text||'');if(a.mode==='words')return t.trim().split(/\s+/).filter(Boolean).length+' words';if(a.mode==='characters')return t.length+' characters';if(a.mode==='lines')return t.split('\n').length+' lines';}
  return 'Unknown tool';}catch(e){return 'Error: '+e.message;}}
+function runningLabel(n){return {web_search:'🔍 Searching the web…',read_wikipedia:'📖 Reading Wikipedia…',run_python:'🐍 Running Python'+(pyReady?'…':' (loading runtime, first run ~5s)…'),calculate:'Calculating…',get_datetime:'Checking time…',take_note:'Saving note…',get_note:'Reading note…',list_notes:'Listing notes…'}[n]||('Running '+n+'…');}
 function safeCalc(e){const p=e.replace(/\^/g,'**').replace(/\bsqrt\b/g,'Math.sqrt').replace(/\babs\b/g,'Math.abs').replace(/\bround\b/g,'Math.round').replace(/\bfloor\b/g,'Math.floor').replace(/\bceil\b/g,'Math.ceil').replace(/\blog10\b/g,'Math.log10').replace(/\blog\b/g,'Math.log').replace(/\bsin\b/g,'Math.sin').replace(/\bcos\b/g,'Math.cos').replace(/\btan\b/g,'Math.tan').replace(/\bpow\b/g,'Math.pow').replace(/\bPI\b|\bpi\b/g,'Math.PI').replace(/\bE\b/g,'Math.E');const s=p.replace(/Math\.\w+/g,'X').replace(/\s/g,'');if(/[^0-9+\-*/().,X%]/.test(s))throw new Error('invalid expression');return Function('"use strict";return('+p+')')();}
 
 async function runAgent(content,skillBody){
@@ -310,7 +363,7 @@ async function runAgent(content,skillBody){
     thinking.remove();
     if(!res.ok){const err=orError(await res.json().catch(()=>({})),res.status);if(isRateLimit(err)&&model.includes(':free')&&!tried){tried=true;model=FALLBACK_MODEL;iter--;const n=appendThinking('Free model rate-limited — switching to GPT-4o mini…');setTimeout(()=>n.remove(),1500);continue;}throw err;}
     const data=await res.json();const msg=data.choices?.[0]?.message;if(!msg)throw new Error('no response');
-    if(msg.tool_calls?.length){messages.push(msg);for(const tc of msg.tool_calls){let args={};try{args=JSON.parse(tc.function?.arguments||'{}');}catch{}const result=executeTool(tc.function.name,args);appendToolBlock(tc.function.name,args,result);messages.push({role:'tool',tool_call_id:tc.id,content:String(result)});}}
+    if(msg.tool_calls?.length){messages.push(msg);for(const tc of msg.tool_calls){let args={};try{args=JSON.parse(tc.function?.arguments||'{}');}catch{}const busyNote=appendThinking(runningLabel(tc.function.name));const result=await executeTool(tc.function.name,args);busyNote.remove();appendToolBlock(tc.function.name,args,result);messages.push({role:'tool',tool_call_id:tc.id,content:String(result)});}}
     else if(msg.content){messages.push({role:'assistant',content:msg.content});addCopy(appendMsg('asst',msg.content,label),msg.content);break;}
     else break;
   }catch(err){thinking.remove();if(err.name!=='AbortError')showErr(err.message);break;}}
